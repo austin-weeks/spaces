@@ -1,17 +1,36 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use axum::extract::ws::{CloseFrame, Message, Utf8Bytes, WebSocket, close_code};
-use futures_util::{SinkExt, StreamExt, stream::SplitStream};
+use futures_util::{
+    SinkExt, StreamExt,
+    stream::{SplitSink, SplitStream},
+};
 use tokio::sync::{
     Mutex,
-    mpsc::{self, Sender},
+    mpsc::{self, Receiver, Sender},
 };
 
 use crate::{location::Location, user_state::UserRegistry, ws_msg::WsMsg};
 
 /// Represents the ID of a websocket connection.
 pub type WsID = usize;
-type WsConn = Sender<Message>;
+
+#[derive(Clone)]
+struct WsConn {
+    sender: Sender<Message>,
+}
+impl WsConn {
+    fn new(sender: Sender<Message>) -> Self {
+        Self { sender }
+    }
+
+    // FIXME: might be smart to buffer these messages and send every X seconds
+    // currently this flushes on every send which is apparently a syscall
+    fn send_msg(&self, msg: Message) {
+        // Best effort send, write loop handles closing the connection when full
+        _ = self.sender.try_send(msg);
+    }
+}
 
 struct Sockets {
     map: HashMap<WsID, WsConn>,
@@ -24,6 +43,8 @@ pub struct Channel {
 }
 
 impl Channel {
+    const MSG_BUF_SIZE: usize = 200; // we'll close connections if this gets full
+
     pub fn new() -> Self {
         Self {
             sockets: Mutex::new(Sockets {
@@ -42,46 +63,60 @@ impl Channel {
             id
         };
 
-        let (mut sink, stream) = ws.split();
-        let (tx, mut rx) = mpsc::channel::<Message>(10);
+        let (sink, stream) = ws.split();
+        let (tx, rx) = mpsc::channel::<Message>(Channel::MSG_BUF_SIZE);
 
-        // Start read loop
         let channel_clone = self.clone();
+        // Start message write loop
         tokio::spawn(async move {
-            let closure = ws_read_loop(stream, channel_clone.clone(), id).await;
-            tracing::debug!(ws_id = id, "dropping socket");
-            channel_clone.unregister_socket(id, closure).await;
-        });
-        // Start write loop
-        tokio::spawn(async move {
-            while let Some(msg) = rx.recv().await {
-                _ = sink.send(msg).await;
+            let closure = ws_write_loop(sink, rx).await;
+            if closure.is_err() {
+                channel_clone.unregister_socket(id, closure).await;
             }
         });
 
         // Insert into map and handle case of duplicate ID
-        if let Some(old) = self.sockets.lock().await.map.insert(id, tx) {
-            _ = old
-                .send(Message::Close(Some(CloseFrame {
-                    code: close_code::ERROR,
-                    reason: Utf8Bytes::from_static("received new connection with same id"),
-                })))
-                .await;
+        if let Some(old) = self.sockets.lock().await.map.insert(id, WsConn::new(tx)) {
+            old.send_msg(Message::Close(Some(CloseFrame {
+                code: close_code::ERROR,
+                reason: Utf8Bytes::from_static("received new connection with same id"),
+            })));
             tracing::error!(
                 ws_id = id,
                 "ws ID already in socket map - closed the old socket",
             );
         }
 
-        // Add user to state
-        self.state.lock().await.register_user(id);
+        // NOTE: intentionally holding the state lock across all these steps
+        // to ensure we enqueue the initial messages to the client in the correct order
+        // and that any disconnects or updates received from other connections come after
+        {
+            let mut state = self.state.lock().await;
+            // Add user to state
+            state.register_user(id);
 
-        // Send current state to new user
-        let users = self.state.lock().await.users_snapshot();
-        self.write_to_one(WsMsg::AllUsersState { users }, id).await;
+            // Notify user of their ID
+            self.send_to_user(id, WsMsg::Connected { id }).await;
+
+            // Send current state to new user
+            let users = state.users_snapshot();
+            self.send_to_user(id, WsMsg::AllUsersState { users }).await;
+        }
 
         // Notify channel of new user
-        self.send_message(WsMsg::NewUser { user_id: id }).await;
+        self.broadcast(WsMsg::NewUser { id }).await;
+
+        // Start socket read loop
+        // NOTE: HAVE do this last to ensure that we listen for socket closure AFTER
+        // we've already added the socket, otherwise this would create a race condition
+        // where a quickly closed socket would unregister first, then register, which creates
+        // a ghost socket that never gets cleaned up - bad.
+        let channel_clone = self.clone();
+        tokio::spawn(async move {
+            let closure = ws_read_loop(stream, channel_clone.clone(), id).await;
+            tracing::debug!(ws_id = id, "dropping socket");
+            channel_clone.unregister_socket(id, closure).await;
+        });
 
         id
     }
@@ -91,54 +126,54 @@ impl Channel {
         let removed = self.sockets.lock().await.map.remove(&id);
         // Do this in two steps to ensure the mutex lock is dropped ^
         if let Some(send) = removed {
-            _ = send
-                .send(Message::Close(Some(match closure {
-                    Ok(_) => CloseFrame {
-                        code: close_code::NORMAL,
-                        reason: Utf8Bytes::default(),
-                    },
-                    Err(e) => CloseFrame {
-                        code: close_code::ERROR,
-                        reason: Utf8Bytes::from_static(e),
-                    },
-                })))
-                .await;
+            send.send_msg(Message::Close(Some(match closure {
+                Ok(_) => CloseFrame {
+                    code: close_code::NORMAL,
+                    reason: Utf8Bytes::default(),
+                },
+                Err(e) => CloseFrame {
+                    code: close_code::ERROR,
+                    reason: Utf8Bytes::from_static(e),
+                },
+            })));
             drop(send);
             self.state.lock().await.remove_user(id);
-            self.send_message(WsMsg::Disconnect { user_id: id }).await;
+            self.broadcast(WsMsg::Disconnect { id }).await;
         }
     }
 
     pub async fn add_location(&self, id: WsID, location: Location) {
         let location = Arc::new(location);
-        self.state
+        let user_stil_connected = self
+            .state
             .lock()
             .await
             .add_user_location(id, location.clone());
-        self.write_broadcast(WsMsg::LocationFound {
-            user_id: id,
-            location,
-        })
-        .await;
+        if user_stil_connected {
+            self.broadcast(WsMsg::LocationFound { id, loc: location })
+                .await;
+        }
     }
 
-    async fn send_message(&self, msg: WsMsg) {
-        match msg {
-            WsMsg::NewUser { .. } | WsMsg::Disconnect { .. } => self.write_broadcast(msg).await,
-            WsMsg::MouseMove { user_id: id, mouse } => {
-                self.state.lock().await.update_user_mouse(id, mouse);
-                self.write_broadcast(msg).await;
-            }
-            WsMsg::Error { user_id: id, .. } => self.write_to_one(msg, id).await,
-            WsMsg::AllUsersState { .. } | WsMsg::LocationFound { .. } => {
-                tracing::error!(msg = ?msg, "channel should not be sent a message of this type")
-            }
+    async fn handle_user_message(&self, id: WsID, msg: WsMsg) {
+        if let WsMsg::ClientMouseMove { mouse } = msg {
+            self.state.lock().await.update_user_mouse(id, mouse);
+            self.broadcast(WsMsg::MouseMove { id, mouse }).await;
+        } else {
+            tracing::error!(msg = ?msg, "client sent non client-mouse-move message");
+            self.send_to_user(
+                id,
+                WsMsg::Error {
+                    msg: "client must not send message types other that mouse_move".into(),
+                },
+            )
+            .await;
         }
     }
 
     // The client will need to remember to filter out messages about itself. I'm not worried about
     // that...
-    async fn write_broadcast(&self, msg: WsMsg) {
+    async fn broadcast(&self, msg: WsMsg) {
         let sockets = self
             .sockets
             .lock()
@@ -155,12 +190,12 @@ impl Channel {
             }
         };
         for socket in sockets {
-            // Message is cheap to clone as it relies on Bytes
-            _ = socket.send(frame.clone()).await;
+            // Message is cheap to clone as it relies on Bytes type
+            socket.send_msg(frame.clone());
         }
     }
 
-    async fn write_to_one(&self, msg: WsMsg, id: WsID) {
+    async fn send_to_user(&self, id: WsID, msg: WsMsg) {
         let Some(ws) = self.sockets.lock().await.map.get(&id).cloned() else {
             tracing::error!(ws_id = id, message = ?msg, "sending to non-existing socket");
             return;
@@ -172,8 +207,43 @@ impl Channel {
                 return;
             }
         };
-        _ = ws.send(frame).await;
+        ws.send_msg(frame);
     }
+}
+
+async fn ws_write_loop(
+    mut ws_sink: SplitSink<WebSocket, Message>,
+    mut rx: Receiver<Message>,
+) -> Result<(), &'static str> {
+    async fn send_close_frame(ws_sink: &mut SplitSink<WebSocket, Message>, e: &'static str) {
+        // Try to send the close frame
+        // if it times out, oh well
+        _ = tokio::time::timeout(
+            Duration::from_secs(5),
+            ws_sink.send(Message::Close(Some(CloseFrame {
+                code: close_code::POLICY,
+                reason: Utf8Bytes::from_static(e),
+            }))),
+        )
+        .await;
+    }
+
+    while let Some(msg) = rx.recv().await {
+        if rx.capacity() <= 1 {
+            let reason = "client too slow";
+            send_close_frame(&mut ws_sink, reason).await;
+            return Err(reason);
+        }
+        if tokio::time::timeout(Duration::from_secs(5), ws_sink.send(msg))
+            .await
+            .is_err()
+        {
+            let reason = "client timed out";
+            send_close_frame(&mut ws_sink, reason).await;
+            return Err(reason);
+        }
+    }
+    Ok(())
 }
 
 async fn ws_read_loop(
@@ -191,28 +261,33 @@ async fn ws_read_loop(
         match frame {
             Message::Text(utf8_bytes) => {
                 match serde_json::from_slice::<WsMsg>(utf8_bytes.as_bytes()) {
-                    Ok(msg) => channel.send_message(msg).await,
+                    Ok(msg) => channel.handle_user_message(id, msg).await,
                     Err(e) => {
                         tracing::error!(error = ?e,"deserialize socket text frame");
                         channel
-                            .send_message(WsMsg::Error {
-                                user_id: id,
-                                message: format!("failed to deserialize json message: {e}"),
-                            })
+                            .send_to_user(
+                                id,
+                                WsMsg::Error {
+                                    msg: format!("failed to deserialize json message: {e}").into(),
+                                },
+                            )
                             .await;
                         return Err("invalid text message");
                     }
                 };
             }
             Message::Binary(bytes) => match rmp_serde::from_slice::<WsMsg>(&bytes) {
-                Ok(msg) => channel.send_message(msg).await,
+                Ok(msg) => channel.handle_user_message(id, msg).await,
                 Err(e) => {
                     tracing::error!(error = ?e, "deserialize socket binary frame");
                     channel
-                        .send_message(WsMsg::Error {
-                            user_id: id,
-                            message: format!("failed to deserialize messagepack message: {e}"),
-                        })
+                        .send_to_user(
+                            id,
+                            WsMsg::Error {
+                                msg: format!("failed to deserialize messagepack message: {e}")
+                                    .into(),
+                            },
+                        )
                         .await;
                     return Err("invalid binary message");
                 }

@@ -5,7 +5,8 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
-axum = { version = "0.8.9", features = ["ws"] }
+axum = { version = "0.8.9", features = ["query", "ws"] }
+dotenvy = "0.15.7"
 futures-util = "0.3.34"
 reqwest = { version = "0.13.5", features = ["json", "query"] }
 rmp-serde = "1.3.1"
