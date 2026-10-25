@@ -1,0 +1,33 @@
+{
+  "name": "spaces-frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "fmt": "prettier . --check",
+    "lint": "eslint",
+    "local-ci": "pnpm run build && pnpm run fmt && pnpm run lint"
+  },
+  "dependencies": {
+    "@msgpack/msgpack": "^3.1.3",
+    "crabuccino": "^0.1.4",
+    "phosphor-solid": "^1.1.5",
+    "solid-js": "^1.9.17"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.19.2",
+    "eslint": "^10.13.0",
+    "eslint-plugin-solid": "^0.18.1",
+    "globals": "^17.13.0",
+    "jiti": "^2.7.0",
+    "prettier": "3.9.10",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.72.0",
+    "vite": "^8.3.4",
+    "vite-plugin-solid": "^2.11.14"
+  }
+}

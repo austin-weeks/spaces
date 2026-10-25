@@ -1,0 +1,41 @@
+.cursor {
+  position: absolute;
+  color: white;
+  transition-property: top, left;
+  transition-duration: 500ms;
+  transition-timing-function: ease;
+  z-index: 10;
+}
+
+.cursor-loc {
+  pointer-events: none;
+  display: flex;
+  position: absolute;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  font-size: 14px;
+  border: 1px solid var(--border);
+  padding: 2px 9px;
+  white-space: nowrap;
+  border-radius: 10px;
+  opacity: 0;
+  transition-property: opacity;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  transition-duration: 100ms;
+  background-color: black;
+}
+
+.cursor:hover .cursor-loc {
+  pointer-events: auto;
+  opacity: 1;
+}
+
+.vpn {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 3px;
+  color: #818cf8;
+}
