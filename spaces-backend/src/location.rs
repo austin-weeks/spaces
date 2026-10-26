@@ -59,6 +59,8 @@ impl LocationClient {
             proxy,
         } = loc_resp
         else {
+            // TODO: this means it's a private IP.
+            // could make this an enum state and display it differently to the client
             bail!("ip-api responded but failed to find location");
         };
 
