@@ -49,7 +49,6 @@ export default function Cursors() {
           clearTimeout(emptyDelayTimeout);
           clearTimeout(retryTimeout);
           setConnection(null);
-          setConnID(null);
           setConnStatus((prev) => (prev === "error" ? prev : "disconnected"));
           // Retry connect
           if (reconnectAttempt < RECONNECT_SEC_TIMEOUTS.length) {
@@ -80,7 +79,6 @@ export default function Cursors() {
       clearTimeout(emptyDelayTimeout);
       clearTimeout(retryTimeout);
       setConnection(null);
-      setConnID(null);
       currentConn?.close();
     });
   });

@@ -7,7 +7,8 @@ use std::{env, net::SocketAddr, sync::Arc};
 
 use axum::{
     Router,
-    extract::{ConnectInfo, Query, State, WebSocketUpgrade, ws::WebSocket},
+    extract::{Query, State, WebSocketUpgrade, ws::WebSocket},
+    http::HeaderMap,
     response::{IntoResponse, Response},
     routing,
 };
@@ -79,7 +80,7 @@ async fn ws_upgrade_handler(
     ws_upgrade: WebSocketUpgrade,
     State(state): State<AppState>,
     Query(params): Query<QueryParams>,
-    ConnectInfo(sock_addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
 ) -> Response {
     tracing::debug!("received upgrade request");
     if let Some(required_secret) = &state.client_secret {
@@ -91,20 +92,26 @@ async fn ws_upgrade_handler(
         }
     }
 
-    ws_upgrade.on_upgrade(move |ws| handle_ws(ws, state, sock_addr))
+    let ip_addr = headers
+        .get("X-Forwarded-For")
+        .and_then(|h| h.to_str().ok())
+        .map(ToOwned::to_owned);
+
+    ws_upgrade.on_upgrade(move |ws| handle_ws(ws, state, ip_addr))
 }
 
-async fn handle_ws(ws: WebSocket, state: AppState, sock_addr: SocketAddr) {
-    let ip_string = sock_addr.ip().to_string();
+async fn handle_ws(ws: WebSocket, state: AppState, ip_addr: Option<String>) {
     let ws_id = state.channel.clone().register_socket(ws).await;
-    tokio::spawn(async move {
-        if let Ok(location) = state
-            .location_client
-            .query_location(&ip_string)
-            .await
-            .inspect_err(|e| tracing::warn!(ip = ip_string, error = ?e, "fetch location"))
-        {
-            state.channel.clone().add_location(ws_id, location).await;
-        }
-    });
+    if let Some(ip_string) = ip_addr {
+        tokio::spawn(async move {
+            if let Ok(location) = state
+                .location_client
+                .query_location(&ip_string)
+                .await
+                .inspect_err(|e| tracing::warn!(ip = ip_string, error = ?e, "fetch location"))
+            {
+                state.channel.clone().add_location(ws_id, location).await;
+            }
+        });
+    }
 }
