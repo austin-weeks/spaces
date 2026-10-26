@@ -74,6 +74,7 @@ async fn main() {
 #[derive(Deserialize)]
 struct QueryParams {
     secret: Option<String>,
+    is_mobile: Option<String>,
 }
 
 async fn ws_upgrade_handler(
@@ -97,11 +98,19 @@ async fn ws_upgrade_handler(
         .and_then(|h| h.to_str().ok())
         .map(ToOwned::to_owned);
 
-    ws_upgrade.on_upgrade(move |ws| handle_ws(ws, state, ip_addr))
+    let is_mobile_conn = params
+        .is_mobile
+        .is_some_and(|v| v.eq_ignore_ascii_case("t") || v.eq_ignore_ascii_case("true"));
+
+    ws_upgrade.on_upgrade(move |ws| handle_ws(ws, state, ip_addr, is_mobile_conn))
 }
 
-async fn handle_ws(ws: WebSocket, state: AppState, ip_addr: Option<String>) {
-    let ws_id = state.channel.clone().register_socket(ws).await;
+async fn handle_ws(ws: WebSocket, state: AppState, ip_addr: Option<String>, is_mobile_conn: bool) {
+    let ws_id = state
+        .channel
+        .clone()
+        .register_socket(ws, is_mobile_conn)
+        .await;
     if let Some(ip_string) = ip_addr {
         tokio::spawn(async move {
             if let Ok(location) = state

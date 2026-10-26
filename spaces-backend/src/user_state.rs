@@ -10,14 +10,14 @@ impl UserRegistry {
         UserRegistry(HashMap::new())
     }
 
-    pub fn register_user(&mut self, id: WsID) {
-        self.0.insert(
-            id,
-            UserState {
-                location: None,
-                mouse_pos: MouseState { x: 0.0, y: 0.0 },
-            },
-        );
+    pub fn register_user(&mut self, id: WsID, is_mobile: bool) -> UserState {
+        let state = UserState {
+            is_mobile,
+            location: None,
+            mouse_pos: None,
+        };
+        self.0.insert(id, state.clone());
+        state
     }
 
     pub fn remove_user(&mut self, id: WsID) {
@@ -27,7 +27,7 @@ impl UserRegistry {
     pub fn update_user_mouse(&mut self, id: WsID, mouse_pos: MouseState) {
         self.0
             .entry(id)
-            .and_modify(|user| user.mouse_pos = mouse_pos);
+            .and_modify(|user| user.mouse_pos = Some(mouse_pos));
     }
 
     /// Returns true if the user is still in the registry or false if not found.
@@ -60,8 +60,9 @@ pub struct MouseState {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct UserState {
+    pub is_mobile: bool,
     pub location: Option<Arc<Location>>,
-    pub mouse_pos: MouseState,
+    pub mouse_pos: Option<MouseState>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

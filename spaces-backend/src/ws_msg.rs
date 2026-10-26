@@ -9,14 +9,14 @@ use serde::{Deserialize, Serialize};
 use crate::{
     channel::WsID,
     location::Location,
-    user_state::{MouseState, UserStateWithID},
+    user_state::{MouseState, UserState, UserStateWithID},
 };
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WsMsg {
     AllUsersState { users: Arc<[UserStateWithID]> },
-    NewUser { id: WsID },
+    NewUser { id: WsID, state: UserState },
     Connected { id: WsID },
     Disconnect { id: WsID },
     MouseMove { id: WsID, mouse: MouseState },

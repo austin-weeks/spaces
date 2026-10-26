@@ -55,7 +55,7 @@ impl Channel {
         }
     }
 
-    pub async fn register_socket(self: Arc<Self>, ws: WebSocket) -> WsID {
+    pub async fn register_socket(self: Arc<Self>, ws: WebSocket, is_mobile_conn: bool) -> WsID {
         let id = {
             let mut sockets = self.sockets.lock().await;
             let id = sockets.id_cursor;
@@ -90,10 +90,10 @@ impl Channel {
         // NOTE: intentionally holding the state lock across all these steps
         // to ensure we enqueue the initial messages to the client in the correct order
         // and that any disconnects or updates received from other connections come after
-        {
+        let user_state = {
             let mut state = self.state.lock().await;
             // Add user to state
-            state.register_user(id);
+            let user_state = state.register_user(id, is_mobile_conn);
 
             // Notify user of their ID
             self.send_to_user(id, WsMsg::Connected { id }).await;
@@ -101,10 +101,15 @@ impl Channel {
             // Send current state to new user
             let users = state.users_snapshot();
             self.send_to_user(id, WsMsg::AllUsersState { users }).await;
-        }
+            user_state
+        };
 
         // Notify channel of new user
-        self.broadcast(WsMsg::NewUser { id }).await;
+        self.broadcast(WsMsg::NewUser {
+            id,
+            state: user_state,
+        })
+        .await;
 
         // Start socket read loop
         // NOTE: HAVE do this last to ensure that we listen for socket closure AFTER

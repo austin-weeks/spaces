@@ -18,14 +18,7 @@ export function createSpacesStore() {
         if (users.find((user) => user.id === msg.id)) return;
         setUsers(users.length, {
           id: msg.id,
-          state: {
-            mouse_pos: {
-              // Use a random position to make it look like
-              // new users pop up in a random position
-              x: Math.random(),
-              y: Math.random(),
-            },
-          },
+          state: msg.state,
         });
         return;
       case "disconnect":

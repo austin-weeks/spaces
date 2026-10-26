@@ -15,7 +15,13 @@ const WS_URL = (() => {
 
 const CLIENT_SECRET: string = import.meta.env.VITE_CLIENT_SECRET;
 
-export class WebSocketError extends Error {}
+function isMobileDevice(): boolean {
+  return (
+    "ontouchstart" in window ||
+    navigator.maxTouchPoints > 0 ||
+    navigator.maxTouchPoints > 0
+  );
+}
 
 export type ConnectionHandlers = {
   onClose: (e: CloseEvent) => void;
@@ -29,7 +35,9 @@ export class SpacesConnection {
   private conn: WebSocket;
 
   constructor(handlers: ConnectionHandlers) {
-    const conn = new WebSocket(`${WS_URL}?secret=${CLIENT_SECRET}`);
+    const conn = new WebSocket(
+      `${WS_URL}?secret=${CLIENT_SECRET}&is_mobile=${isMobileDevice()}`,
+    );
     this.conn = conn;
     conn.binaryType = "arraybuffer";
     conn.addEventListener("close", (e) => {

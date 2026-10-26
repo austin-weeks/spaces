@@ -18,7 +18,7 @@ export type WsMsg = TaggedUnion<
   "type",
   {
     all_users_state: { users: UserStateWithID[] };
-    new_user: { id: UserID };
+    new_user: { id: UserID; state: UserState };
     connected: { id: UserID };
     disconnect: { id: UserID };
     mouse_move: { id: UserID; mouse: MouseState };
@@ -29,8 +29,9 @@ export type WsMsg = TaggedUnion<
 >;
 
 export type UserState = {
+  is_mobile: boolean;
   location?: Location;
-  mouse_pos: MouseState;
+  mouse_pos?: MouseState;
 };
 
 export type UserStateWithID = {
