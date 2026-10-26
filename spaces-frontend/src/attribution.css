@@ -1,0 +1,9 @@
+.attribution {
+  position: absolute;
+  bottom: 4px;
+  left: 10px;
+  font-size: 14px;
+}
+.attribution a {
+  text-decoration: none;
+}
